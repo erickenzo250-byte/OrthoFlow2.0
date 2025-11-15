@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, timedelta, date
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Float
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import plotly.express as px
 import plotly.graph_objects as go
+import random
 from typing import List, Tuple
 
 # -----------------------------
@@ -21,7 +22,7 @@ def get_session():
     return SessionLocal()
 
 # -----------------------------
-# MODELS (No changes needed here)
+# MODELS
 # -----------------------------
 class Representative(Base):
     __tablename__ = "representatives"
@@ -57,19 +58,118 @@ class Report(Base):
 Base.metadata.create_all(engine)
 
 # -----------------------------
-# DATA UTILITY FUNCTIONS (New for robust data retrieval)
+# DATA UTILITY FUNCTIONS
 # -----------------------------
-@st.cache_data
+@st.cache_data(ttl=600) # Cache for 10 minutes
 def get_reps_and_procs() -> Tuple[List[Representative], List[Procedure]]:
-    """Fetches all Reps and Procedures in a single, cached, thread-safe operation."""
+    """Fetches all Reps and Procedures for selectboxes."""
     session = get_session()
     try:
         reps = session.query(Representative).all()
         procedures = session.query(Procedure).all()
         return reps, procedures
     except Exception as e:
-        st.error(f"Database error during fetch: {e}")
+        # st.error(f"Database error during fetch: {e}") # Keep this commented out for deployment
         return [], []
+    finally:
+        session.close()
+
+@st.cache_data(ttl=60) # Cache for 1 minute
+def get_all_reports() -> pd.DataFrame:
+    """Fetches all reports for the dashboard and returns a DataFrame."""
+    session = get_session()
+    try:
+        reports = session.query(Report).all()
+        if not reports:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame([{
+            "rep": r.rep.name,
+            "procedure": r.procedure.name,
+            "cases": r.cases_done,
+            "income": r.income_generated,
+            "date": r.reported_at
+        } for r in reports])
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    finally:
+        session.close()
+
+def generate_test_data_200():
+    """Generates 5 Reps, 5 Procedures, and 200 random reports."""
+    session = get_session()
+    
+    try:
+        st.write("Starting test data generation...")
+        rep_names = ["Dr. Smith", "Dr. Johnson", "Dr. Achieng", "Dr. Mwangi", "Dr. Chen"]
+        procedure_names = [
+            "Total Knee Replacement (TKR)", 
+            "ACL Reconstruction", 
+            "Spinal Fusion (L4-L5)", 
+            "Rotator Cuff Repair", 
+            "Hip Arthroscopy"
+        ]
+
+        # Insert static data
+        reps = []
+        for name in rep_names:
+            rep = session.query(Representative).filter_by(name=name).first()
+            if not rep:
+                rep = Representative(name=name)
+                session.add(rep)
+            reps.append(rep)
+        
+        procedures = []
+        for name in procedure_names:
+            proc = session.query(Procedure).filter_by(name=name).first()
+            if not proc:
+                proc = Procedure(name=name)
+                session.add(proc)
+            procedures.append(proc)
+            
+        session.commit()
+        
+        # Re-fetch the actual objects with IDs
+        reps = session.query(Representative).all()
+        procedures = session.query(Procedure).all()
+        
+        # Generate 200 Random Reports
+        st.write("Generating 200 Random Reports...")
+        reports_to_add = []
+        
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=180) # Last 6 months
+        time_diff = end_date - start_date
+        
+        for _ in range(200):
+            random_rep = random.choice(reps)
+            random_proc = random.choice(procedures)
+            
+            # Cases/Income logic
+            if "Replacement" in random_proc.name or "Fusion" in random_proc.name:
+                cases = random.randint(1, 4)
+                income = round(random.uniform(250000, 500000) * cases, -3)
+            else:
+                cases = random.randint(3, 10)
+                income = round(random.uniform(50000, 150000) * cases, -3)
+                
+            random_seconds = random.randrange(int(time_diff.total_seconds()))
+            reported_at = start_date + timedelta(seconds=random_seconds)
+            
+            report = Report(
+                rep_id=random_rep.id,
+                procedure_id=random_proc.id,
+                cases_done=cases,
+                income_generated=income,
+                reported_at=reported_at
+            )
+            reports_to_add.append(report)
+            
+        session.add_all(reports_to_add)
+        session.commit()
+        
+        st.success("Test data generation complete! **200 reports** added.")
+        
     finally:
         session.close()
 
@@ -79,11 +179,11 @@ def get_reps_and_procs() -> Tuple[List[Representative], List[Procedure]]:
 st.set_page_config(page_title="Orthotracker Dashboard", layout="wide", initial_sidebar_state="expanded")
 st.title("🏥 Orthotracker Dashboard")
 
-# --- Fetch Reps/Procedures once for the sidebar (Cached) ---
+# --- Fetch cached objects for sidebar forms ---
 reps, procedures = get_reps_and_procs() 
 
 # -----------------------------
-# SIDEBAR - Add Data
+# SIDEBAR - Add Data & Testing
 # -----------------------------
 st.sidebar.header("Add Data")
 
@@ -104,8 +204,8 @@ with st.sidebar.expander("➕ Add Representative"):
                     session.add(rep)
                     session.commit()
                     st.success(f"Representative **{rep_name}** added!")
-                    # Clear cache to force refresh of selectboxes on next run
-                    get_reps_and_procs.clear() 
+                    get_reps_and_procs.clear() # Clear cache
+                    get_all_reports.clear() # Clear cache
         finally:
             session.close()
 
@@ -126,16 +226,13 @@ with st.sidebar.expander("➕ Add Procedure"):
                     session.add(proc)
                     session.commit()
                     st.success(f"Procedure **{proc_name}** added!")
-                    # Clear cache to force refresh of selectboxes on next run
-                    get_reps_and_procs.clear()
+                    get_reps_and_procs.clear() # Clear cache
+                    get_all_reports.clear() # Clear cache
         finally:
             session.close()
 
 ## Add Report using st.form
 with st.sidebar.expander("📝 Add Report"):
-    # Re-fetch cached objects for the selectbox in case new data was added
-    reps, procedures = get_reps_and_procs() 
-    
     with st.form("add_report_form", clear_on_submit=True):
         
         if not reps or not procedures:
@@ -155,44 +252,28 @@ with st.sidebar.expander("📝 Add Report"):
             else:
                 session = get_session()
                 try:
-                    # Use the ID of the selected object for the relationship
                     report = Report(rep_id=rep_sel.id, procedure_id=proc_sel.id, cases_done=cases_done, income_generated=income)
                     session.add(report)
                     session.commit()
                     st.success(f"Report for **{rep_sel.name}** added successfully!")
+                    get_all_reports.clear() # Clear cache
                 finally:
                     session.close()
+                    
+st.sidebar.markdown("---")
+if st.sidebar.button("Generate Test Data (200 Reports) 🧪"):
+    st.cache_data.clear() # Clear ALL caches
+    generate_test_data_200()
+    st.rerun()
 
 # -----------------------------
 # DASHBOARD & INSIGHTS
 # -----------------------------
 st.header("📊 Insights & Projections")
 
-# Fetch all reports for the dashboard
-@st.cache_data
-def get_all_reports() -> pd.DataFrame:
-    session = get_session()
-    try:
-        reports = session.query(Report).all()
-        if not reports:
-            return pd.DataFrame()
-        
-        df = pd.DataFrame([{
-            "rep": r.rep.name,
-            "procedure": r.procedure.name,
-            "cases": r.cases_done,
-            "income": r.income_generated,
-            "date": r.reported_at
-        } for r in reports])
-        df["date"] = pd.to_datetime(df["date"])
-        return df
-    finally:
-        session.close()
-
 df = get_all_reports()
 
 if not df.empty:
-    # --- Data Processing (Dashboard logic remains the same) ---
     
     # -------------------------
     # Filter Options
@@ -237,7 +318,6 @@ if not df.empty:
             (df_filtered["date"].dt.date <= end_date)
         ]
 
-    # Handle case where filtering results in empty dataframe
     if df_filtered.empty:
         st.warning("No reports match the current filters.")
         st.stop()
@@ -254,6 +334,8 @@ if not df.empty:
     kpi1.metric("Total Cases", total_cases)
     kpi2.metric("Total Income (KSh)", f"{total_income:,.2f}")
     kpi3.metric("Avg Income per Report", f"{avg_income:,.2f}")
+    
+    st.markdown("---")
 
     # -------------------------
     # Reports Table & Export
@@ -264,6 +346,8 @@ if not df.empty:
     csv = df_filtered.to_csv(index=False).encode("utf-8")
     st.download_button(label="📥 Download Filtered CSV", data=csv, file_name="filtered_reports.csv", mime="text/csv")
 
+    st.markdown("---")
+    
     # -------------------------
     # Charts & Insights
     # -------------------------
@@ -306,6 +390,7 @@ if not df.empty:
     )
     st.plotly_chart(fig_scatter, use_container_width=True)
 
+    st.markdown("---")
 
     # -------------------------
     # Trend Lines & Projections
@@ -339,4 +424,4 @@ if not df.empty:
         st.info("Need reports spanning more than one month to show trend analysis.")
 
 else:
-    st.warning("No reports yet. Please add data using the sidebar to view insights.")
+    st.warning("No reports yet. Please use the sidebar to add data or generate test data.")
