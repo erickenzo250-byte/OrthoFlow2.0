@@ -1,154 +1,142 @@
-"""
-Orthotracker Pro — Full Streamlit MVP (bcrypt issue fixed)
-Filename: OrthotrackerPro_Full_Streamlit_MVP.py
+# OrthotrackerPro_Full_Streamlit_MVP.py
 
-Features:
-- User registration & login (email/password, hashed using pbkdf2_sha256)
-- Roles: admin / rep
-- Procedure quick logging (with templates)
-- Attachments saved locally or to S3 if AWS creds present
-- Commission engine with configurable JSON rules
-- Offline queue simulation + sync
-- Admin dashboard (users, commissions, hospitals/surgeons, audit logs)
-- SQLite default, easily switchable to Postgres
-- Dockerfile and requirements.txt snippets included
-"""
-
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import streamlit as st
-from datetime import datetime, date
-import os
-import json
-from pathlib import Path
-import pandas as pd
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Float, Boolean, Text, ForeignKey, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from passlib.context import CryptContext
 
-# Optional S3 support
-try:
-    import boto3
-    from botocore.exceptions import BotoCoreError, NoCredentialsError
-    S3_AVAILABLE = True
-except Exception:
-    S3_AVAILABLE = False
+# -------------------------
+# Database setup
+# -------------------------
+DATABASE_URL = "sqlite:///orthotracker.db"  # Change if using Postgres/MySQL
 
-# -------------------- Configuration --------------------
-BASE_DIR = Path(__file__).parent
-DB_FILE = BASE_DIR / "orthotracker.db"
-UPLOAD_DIR = BASE_DIR / "uploads"
-QUEUE_FILE = BASE_DIR / "offline_queue.json"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-DATABASE_URL = os.environ.get("DATABASE_URL") or f"sqlite:///{DB_FILE}"
-AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET")
-AWS_REGION = os.environ.get("AWS_REGION") or "us-east-1"
-
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if DATABASE_URL.startswith('sqlite') else {})
-SessionLocal = sessionmaker(bind=engine)
+engine = create_engine(DATABASE_URL, echo=True)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# -------------------- Password Hashing --------------------
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# -------------------------
+# Models
+# -------------------------
 
-# -------------------- Models --------------------
-class User(Base):
-    __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    email = Column(String, unique=True, index=True, nullable=False)
-    full_name = Column(String, nullable=False)
-    hashed_password = Column(String, nullable=False)
-    role = Column(String, default="rep")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)
-    reps = relationship("Rep", back_populates="user", uselist=False)
+class Representative(Base):
+    __tablename__ = "representatives"
 
-class Rep(Base):
-    __tablename__ = "reps"
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey('users.id'))
-    territory = Column(String, nullable=True)
-    user = relationship("User", back_populates="reps")
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    region = Column(String(50), nullable=True)
 
-class Hospital(Base):
-    __tablename__ = "hospitals"
-    id = Column(Integer, primary_key=True)
-    name = Column(String, unique=True)
-    address = Column(String)
-    geo_lat = Column(String)
-    geo_lng = Column(String)
+    reports = relationship("Report", back_populates="rep")
 
-class Surgeon(Base):
-    __tablename__ = "surgeons"
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    hospital_id = Column(Integer, ForeignKey('hospitals.id'))
+    def __repr__(self):
+        return f"<Representative(id={self.id}, name={self.name}, region={self.region})>"
 
 class Procedure(Base):
     __tablename__ = "procedures"
-    id = Column(Integer, primary_key=True)
-    rep_id = Column(Integer, ForeignKey('reps.id'))
-    rep_name = Column(String)
-    hospital = Column(String)
-    surgeon = Column(String)
-    procedure_type = Column(String)
-    date = Column(String)
-    revenue = Column(Float, default=0.0)
-    notes = Column(Text)
-    status = Column(String, default="pending")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    attachments = relationship("Attachment", back_populates="procedure")
 
-class Attachment(Base):
-    __tablename__ = "attachments"
-    id = Column(Integer, primary_key=True)
-    procedure_id = Column(Integer, ForeignKey('procedures.id'))
-    filename = Column(String)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
-    procedure = relationship("Procedure", back_populates="attachments")
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(50), nullable=False)  # e.g., "Trauma" or "Arthro"
+    max_cap = Column(Float, nullable=True)     # Optional cap for calculations
 
-class CommissionRule(Base):
-    __tablename__ = "commission_rules"
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    condition = Column(JSON)
-    mode = Column(String, default="percentage")
-    value = Column(Float, default=0.0)
-    active = Column(Boolean, default=True)
-    effective_from = Column(DateTime, default=datetime(2000,1,1))
-    effective_to = Column(DateTime, default=datetime(2099,1,1))
+    reports = relationship("Report", back_populates="procedure")
 
-class Commission(Base):
-    id = Column(Integer, primary_key=True)
-    procedure_id = Column(Integer, ForeignKey('procedures.id'))
-    rep_id = Column(Integer, ForeignKey('reps.id'))
-    amount = Column(Float)
-    calculated_at = Column(DateTime, default=datetime.utcnow)
+    def __repr__(self):
+        return f"<Procedure(id={self.id}, name={self.name}, max_cap={self.max_cap})>"
 
-class AuditLog(Base):
-    __tablename__ = "audit_logs"
-    id = Column(Integer, primary_key=True)
-    user = Column(String)
-    action = Column(String)
-    entity = Column(String)
-    entity_id = Column(String)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    details = Column(Text)
+class Report(Base):
+    __tablename__ = "reports"
 
+    id = Column(Integer, primary_key=True, index=True)
+    rep_id = Column(Integer, ForeignKey("representatives.id"))
+    procedure_id = Column(Integer, ForeignKey("procedures.id"))
+    cases_done = Column(Integer, nullable=False)
+    income_generated = Column(Float, nullable=False)
+    reported_at = Column(DateTime, default=datetime.utcnow)
+
+    rep = relationship("Representative", back_populates="reports")
+    procedure = relationship("Procedure", back_populates="reports")
+
+    def __repr__(self):
+        return (f"<Report(id={self.id}, rep={self.rep.name}, procedure={self.procedure.name}, "
+                f"cases_done={self.cases_done}, income={self.income_generated})>")
+
+# -------------------------
 # Create tables
-Base.metadata.create_all(bind=engine)
+# -------------------------
+def init_db():
+    Base.metadata.create_all(bind=engine)
 
-# -------------------- Utility & Auth Functions --------------------
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+# -------------------------
+# Streamlit app
+# -------------------------
+def main():
+    st.title("Orthotracker MVP App")
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    menu = ["Add Representative", "Add Procedure", "Add Report", "View Data"]
+    choice = st.sidebar.selectbox("Menu", menu)
 
-# Functions for DB session, file upload, offline queue, commission calculation, audit logging remain unchanged
-# ... rest of the original MVP code ...
+    session = SessionLocal()
 
-st.sidebar.markdown("---")
-st.sidebar.write("Orthotracker Pro — Full MVP. Password hashing now works with pbkdf2_sha256")
+    if choice == "Add Representative":
+        st.subheader("Add a Representative")
+        with st.form("add_rep"):
+            rep_name = st.text_input("Representative Name")
+            region = st.text_input("Region")
+            submitted = st.form_submit_button("Add Representative")
+            if submitted:
+                new_rep = Representative(name=rep_name, region=region)
+                session.add(new_rep)
+                session.commit()
+                st.success(f"Added representative {rep_name}")
 
-# The rest of the Streamlit app code remains the same as before
+    elif choice == "Add Procedure":
+        st.subheader("Add a Procedure")
+        with st.form("add_proc"):
+            proc_name = st.text_input("Procedure Name (Trauma / Arthro)")
+            max_cap = st.number_input("Maximum Cap (optional)", min_value=0.0, step=0.01)
+            submitted = st.form_submit_button("Add Procedure")
+            if submitted:
+                new_proc = Procedure(name=proc_name, max_cap=max_cap if max_cap > 0 else None)
+                session.add(new_proc)
+                session.commit()
+                st.success(f"Added procedure {proc_name}")
+
+    elif choice == "Add Report":
+        st.subheader("Add a Report")
+        reps = session.query(Representative).all()
+        procs = session.query(Procedure).all()
+
+        if not reps or not procs:
+            st.warning("Add at least one representative and one procedure first.")
+        else:
+            with st.form("add_report"):
+                rep_select = st.selectbox("Representative", reps, format_func=lambda x: x.name)
+                proc_select = st.selectbox("Procedure", procs, format_func=lambda x: x.name)
+                cases_done = st.number_input("Number of Cases Done", min_value=0, step=1)
+                income_generated = st.number_input("Income Generated (KSh)", min_value=0.0, step=1.0)
+                submitted = st.form_submit_button("Add Report")
+                if submitted:
+                    new_report = Report(
+                        rep_id=rep_select.id,
+                        procedure_id=proc_select.id,
+                        cases_done=cases_done,
+                        income_generated=income_generated
+                    )
+                    session.add(new_report)
+                    session.commit()
+                    st.success(f"Added report for {rep_select.name} ({proc_select.name})")
+
+    elif choice == "View Data":
+        st.subheader("All Reports")
+        reports = session.query(Report).all()
+        if reports:
+            for r in reports:
+                st.write(f"{r.rep.name} | {r.procedure.name} | Cases: {r.cases_done} | "
+                         f"Income: KSh {r.income_generated} | Reported: {r.reported_at}")
+        else:
+            st.info("No reports recorded yet.")
+
+    session.close()
+
+if __name__ == "__main__":
+    init_db()
+    main()
