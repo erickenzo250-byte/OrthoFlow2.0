@@ -80,6 +80,7 @@ class Report(Base):
 # -----------------------------
 # INIT DATABASE
 # -----------------------------
+# This creates all tables *if they don't exist*. It WILL NOT update existing tables.
 Base.metadata.create_all(engine)
 
 # -----------------------------
@@ -95,6 +96,7 @@ def get_select_data() -> Tuple[List[Representative], List[Procedure], List[Docto
         doctors = session.query(Doctor).order_by(Doctor.name).all()
         return reps, procedures, doctors
     except Exception:
+        # This will catch errors if the schema is wrong
         return [], [], []
     finally:
         session.close()
@@ -108,15 +110,16 @@ def get_all_reports() -> pd.DataFrame:
         if not reports:
             return pd.DataFrame()
         
+        # This list comprehension will fail if the .db file doesn't have the new columns
         df = pd.DataFrame([{
             "rep": r.rep.name,
             "procedure": r.procedure.name,
             "doctor": r.doctor.name,
             "cases": r.cases_done,
             "income": r.income_generated,
-            "implants_used": r.implants_used,      # NEW
-            "challenges": r.challenges,            # NEW
-            "recommendation": r.recommendation,    # NEW
+            "implants_used": r.implants_used,
+            "challenges": r.challenges,
+            "recommendation": r.recommendation,
             "date": r.reported_at
         } for r in reports])
         df["date"] = pd.to_datetime(df["date"])
@@ -134,7 +137,7 @@ def generate_test_data_200():
         doctor_names = ["Dr. Adams", "Dr. Baker", "Dr. Cooper", "Dr. Diana", "Dr. Evan"]
         procedure_names = ["TKR", "ACL Reconstruction", "Spinal Fusion", "Rotator Cuff Repair", "Hip Arthroscopy"]
 
-        # Insert static data
+        # Insert static data using session.merge to avoid unique constraint errors
         reps = [session.merge(Representative(name=name)) for name in rep_names]
         procedures = [session.merge(Procedure(name=name)) for name in procedure_names]
         doctors = [session.merge(Doctor(name=name)) for name in doctor_names]
@@ -246,7 +249,7 @@ with st.sidebar.expander("👨‍⚕️ Add Doctor"):
                     session.add(doc)
                     session.commit()
                     st.success(f"Doctor **{doc_name}** added!")
-                    get_select_data.clear()
+                    get_select_data.clear() # Clear cache
         finally:
             session.close()
 
@@ -266,22 +269,20 @@ with st.sidebar.expander("📝 Add New Report"):
             st.markdown("---")
             st.subheader("Details & Inventory")
             
-            # --- NEW INPUT FIELDS ---
             implants_used = st.text_area("Implants Used (Specify Type/Serial #)", key="report_implants", height=80)
             challenges = st.text_area("Surgical Challenges/Notes", key="report_challenges", height=80)
             recommendation = st.text_area("Follow-up/Sales Recommendation", key="report_recommendation", height=80)
-            # ------------------------
             
             st.markdown("---")
             st.subheader("Financial & Count")
-            cases_done = st.number_input("Cases Done", min_value=0, step=1, key="report_cases")
+            cases_done = st.number_input("Cases Done", min_value=1, step=1, key="report_cases", value=1)
             income = st.number_input("Income Generated (KSh)", min_value=0.0, step=1000.0, key="report_income")
             
             submitted = st.form_submit_button(f"Log Report for {st.session_state['current_rep_name']}")
 
             if submitted:
-                if cases_done < 0 or income < 0:
-                     st.error("Cases done and income must be non-negative values.")
+                if cases_done <= 0:
+                     st.error("Cases done must be at least 1.")
                 else:
                     session = get_session()
                     try:
@@ -298,15 +299,15 @@ with st.sidebar.expander("📝 Add New Report"):
                         session.add(report)
                         session.commit()
                         st.success(f"Report logged successfully by **{st.session_state['current_rep_name']}**.")
-                        get_all_reports.clear()
+                        get_all_reports.clear() # Clear cache
                     finally:
                         session.close()
 
 st.sidebar.markdown("---")
 
-## Add Rep (Admin function)
-with st.sidebar.expander("🔑 Add New Rep (Admin)"):
-    rep_name = st.text_input("Rep Name", key="admin_rep_name")
+## Add Rep & Procedure (Admin functions)
+with st.sidebar.expander("🔑 Admin: Add Rep & Procedure"):
+    rep_name = st.text_input("New Rep Name", key="admin_rep_name")
     if st.button("Add Rep", key="admin_add_rep"):
         session = get_session()
         try:
@@ -323,10 +324,29 @@ with st.sidebar.expander("🔑 Add New Rep (Admin)"):
         finally:
             session.close()
 
+    st.markdown("---")
+    proc_name = st.text_input("New Procedure Name", key="admin_proc_name")
+    if st.button("Add Procedure", key="admin_add_proc"):
+        session = get_session()
+        try:
+            if not proc_name: st.error("Procedure name cannot be empty.")
+            else:
+                existing_proc = session.query(Procedure).filter_by(name=proc_name).first()
+                if existing_proc: st.warning(f"Procedure **{proc_name}** already exists!")
+                else:
+                    proc = Procedure(name=proc_name)
+                    session.add(proc)
+                    session.commit()
+                    st.success(f"Procedure **{proc_name}** added!")
+                    get_select_data.clear()
+        finally:
+            session.close()
+
+
 if st.sidebar.button("Generate Test Data (200 Reports) 🧪"):
-    st.cache_data.clear()
+    st.cache_data.clear() # Clear ALL caches
     generate_test_data_200()
-    st.rerun()
+    st.rerun() # Rerun the app to load the new data
 
 # -----------------------------
 ## DASHBOARD & INSIGHTS
@@ -393,13 +413,13 @@ if not df.empty:
     # -------------------------
     total_cases = df_filtered["cases"].sum()
     total_income = df_filtered["income"].sum()
-    avg_income = df_filtered["income"].mean()
+    avg_income_per_report = df_filtered["income"].mean()
 
     st.subheader("Key Performance Indicators (KPIs)")
     kpi1, kpi2, kpi3 = st.columns(3)
-    kpi1.metric("Total Cases", total_cases)
+    kpi1.metric("Total Cases Logged", total_cases)
     kpi2.metric("Total Income (KSh)", f"{total_income:,.2f}")
-    kpi3.metric("Avg Income per Report", f"{avg_income:,.2f}")
+    kpi3.metric("Avg Income per Report", f"{avg_income_per_report:,.2f}")
     
     st.markdown("---")
 
