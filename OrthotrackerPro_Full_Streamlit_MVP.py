@@ -8,7 +8,7 @@ import streamlit as st
 # -------------------------
 # Database setup
 # -------------------------
-DATABASE_URL = "sqlite:///orthotracker.db"  # Change if using Postgres/MySQL
+DATABASE_URL = "sqlite:///orthotracker.db"  # change if using Postgres/MySQL
 
 engine = create_engine(DATABASE_URL, echo=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -17,34 +17,23 @@ Base = declarative_base()
 # -------------------------
 # Models
 # -------------------------
-
 class Representative(Base):
     __tablename__ = "representatives"
-
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     region = Column(String(50), nullable=True)
-
     reports = relationship("Report", back_populates="rep")
-
-    def __repr__(self):
-        return f"<Representative(id={self.id}, name={self.name}, region={self.region})>"
 
 class Procedure(Base):
     __tablename__ = "procedures"
-
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), nullable=False)  # e.g., "Trauma" or "Arthro"
-    max_cap = Column(Float, nullable=True)     # Optional cap for calculations
-
+    name = Column(String(50), nullable=False)
+    max_cap = Column(Float, nullable=True)
     reports = relationship("Report", back_populates="procedure")
-
-    def __repr__(self):
-        return f"<Procedure(id={self.id}, name={self.name}, max_cap={self.max_cap})>"
+    attachments = relationship("Attachment", back_populates="procedure")
 
 class Report(Base):
     __tablename__ = "reports"
-
     id = Column(Integer, primary_key=True, index=True)
     rep_id = Column(Integer, ForeignKey("representatives.id"))
     procedure_id = Column(Integer, ForeignKey("procedures.id"))
@@ -55,25 +44,28 @@ class Report(Base):
     rep = relationship("Representative", back_populates="reports")
     procedure = relationship("Procedure", back_populates="reports")
 
-    def __repr__(self):
-        return (f"<Report(id={self.id}, rep={self.rep.name}, procedure={self.procedure.name}, "
-                f"cases_done={self.cases_done}, income={self.income_generated})>")
+class Attachment(Base):
+    __tablename__ = "attachments"
+    id = Column(Integer, primary_key=True)
+    procedure_id = Column(Integer, ForeignKey('procedures.id'))
+    filename = Column(String)
+    uploaded_at = Column(DateTime, default=datetime.utcnow)
+
+    procedure = relationship("Procedure", back_populates="attachments")
 
 # -------------------------
-# Create tables
+# Initialize DB
 # -------------------------
 def init_db():
     Base.metadata.create_all(bind=engine)
 
 # -------------------------
-# Streamlit app
+# Streamlit App
 # -------------------------
 def main():
     st.title("Orthotracker MVP App")
-
-    menu = ["Add Representative", "Add Procedure", "Add Report", "View Data"]
+    menu = ["Add Representative", "Add Procedure", "Add Report", "Add Attachment", "View Data"]
     choice = st.sidebar.selectbox("Menu", menu)
-
     session = SessionLocal()
 
     if choice == "Add Representative":
@@ -92,7 +84,7 @@ def main():
         st.subheader("Add a Procedure")
         with st.form("add_proc"):
             proc_name = st.text_input("Procedure Name (Trauma / Arthro)")
-            max_cap = st.number_input("Maximum Cap (optional)", min_value=0.0, step=0.01)
+            max_cap = st.number_input("Maximum Cap (optional)", min_value=0.0, step=1.0)
             submitted = st.form_submit_button("Add Procedure")
             if submitted:
                 new_proc = Procedure(name=proc_name, max_cap=max_cap if max_cap > 0 else None)
@@ -104,7 +96,6 @@ def main():
         st.subheader("Add a Report")
         reps = session.query(Representative).all()
         procs = session.query(Procedure).all()
-
         if not reps or not procs:
             st.warning("Add at least one representative and one procedure first.")
         else:
@@ -124,6 +115,25 @@ def main():
                     session.add(new_report)
                     session.commit()
                     st.success(f"Added report for {rep_select.name} ({proc_select.name})")
+
+    elif choice == "Add Attachment":
+        st.subheader("Add Attachment")
+        procs = session.query(Procedure).all()
+        if not procs:
+            st.warning("Add at least one procedure first.")
+        else:
+            with st.form("add_attachment"):
+                proc_select = st.selectbox("Procedure", procs, format_func=lambda x: x.name)
+                file = st.file_uploader("Upload File")
+                submitted = st.form_submit_button("Upload Attachment")
+                if submitted and file is not None:
+                    new_attachment = Attachment(
+                        procedure_id=proc_select.id,
+                        filename=file.name
+                    )
+                    session.add(new_attachment)
+                    session.commit()
+                    st.success(f"Uploaded {file.name} for {proc_select.name}")
 
     elif choice == "View Data":
         st.subheader("All Reports")
