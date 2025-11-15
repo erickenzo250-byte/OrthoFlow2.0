@@ -1,7 +1,5 @@
-# requirements.txt for Orthotracker Dashboard
-
-streamlit>=1.35.0
+streamlit
 pandas
 numpy
-SQLAlchemy>=2.0.0 # Using >=2.0 for the declarative_base approach
-plotly>=5.0.0
+SQLAlchemy
+plotly
