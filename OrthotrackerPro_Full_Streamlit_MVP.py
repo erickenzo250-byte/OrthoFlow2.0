@@ -1,228 +1,184 @@
-# OrthotrackerPro_Full_Streamlit_MVP.py
-
-from datetime import datetime
-import pandas as pd
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, ForeignKey
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import streamlit as st
+import pandas as pd
+import numpy as np
+from datetime import datetime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Float
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import plotly.express as px
+import plotly.graph_objects as go
 
-# -------------------------
-# Database setup
-# -------------------------
-DATABASE_URL = "sqlite:///orthotracker.db"  # or use secrets.toml for production
-engine = create_engine(DATABASE_URL, echo=False)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# -----------------------------
+# DATABASE SETUP
+# -----------------------------
+DATABASE_URL = "sqlite:///orthotracker.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(bind=engine)
+session = SessionLocal()
 Base = declarative_base()
 
-# -------------------------
-# Models
-# -------------------------
+# -----------------------------
+# MODELS
+# -----------------------------
 class Representative(Base):
     __tablename__ = "representatives"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
-    region = Column(String(50), nullable=True)
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
     reports = relationship("Report", back_populates="rep")
 
 class Procedure(Base):
     __tablename__ = "procedures"
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(50), nullable=False)
-    max_cap = Column(Float, nullable=True)
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
     reports = relationship("Report", back_populates="procedure")
-    attachments = relationship("Attachment", back_populates="procedure")
 
 class Report(Base):
     __tablename__ = "reports"
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(Integer, primary_key=True)
     rep_id = Column(Integer, ForeignKey("representatives.id"))
     procedure_id = Column(Integer, ForeignKey("procedures.id"))
-    cases_done = Column(Integer, nullable=False)
-    income_generated = Column(Float, nullable=False)
+    cases_done = Column(Integer, default=0)
+    income_generated = Column(Float, default=0.0)
     reported_at = Column(DateTime, default=datetime.utcnow)
 
     rep = relationship("Representative", back_populates="reports")
     procedure = relationship("Procedure", back_populates="reports")
 
-class Attachment(Base):
-    __tablename__ = "attachments"
-    id = Column(Integer, primary_key=True)
-    procedure_id = Column(Integer, ForeignKey('procedures.id'))
-    filename = Column(String)
-    uploaded_at = Column(DateTime, default=datetime.utcnow)
+# -----------------------------
+# INIT DATABASE
+# -----------------------------
+Base.metadata.create_all(engine)
 
-    procedure = relationship("Procedure", back_populates="attachments")
+# -----------------------------
+# STREAMLIT APP
+# -----------------------------
+st.set_page_config(page_title="Orthotracker Dashboard", layout="wide", initial_sidebar_state="expanded")
+st.title("🏥 Orthotracker Dashboard")
 
-# -------------------------
-# Initialize DB
-# -------------------------
-def init_db():
-    Base.metadata.create_all(bind=engine)
+# -----------------------------
+# SIDEBAR - Add Data
+# -----------------------------
+st.sidebar.header("Add Data")
 
-# -------------------------
-# Streamlit App
-# -------------------------
-def main():
-    st.set_page_config(page_title="Orthotracker Dashboard", layout="wide", page_icon="💉")
-    st.title("🦴 Orthotracker MVP Dashboard")
-    menu = ["Dashboard", "Add Representative", "Add Procedure", "Add Report", "Add Attachment", "View Data"]
-    choice = st.sidebar.selectbox("Menu", menu)
-    session = SessionLocal()
+with st.sidebar.expander("Add Representative"):
+    name = st.text_input("Rep Name")
+    if st.button("Add Rep"):
+        if name:
+            rep = Representative(name=name)
+            session.add(rep)
+            session.commit()
+            st.success(f"Representative {name} added!")
 
-    # -------------------------
-    # DASHBOARD
-    # -------------------------
-    if choice == "Dashboard":
-        st.subheader("Overview & Insights")
-        # Fetch data
-        reports = pd.read_sql(session.query(Report).statement, engine)
-        reps = pd.read_sql(session.query(Representative).statement, engine)
-        procs = pd.read_sql(session.query(Procedure).statement, engine)
+with st.sidebar.expander("Add Procedure"):
+    pname = st.text_input("Procedure Name")
+    if st.button("Add Procedure"):
+        if pname:
+            proc = Procedure(name=pname)
+            session.add(proc)
+            session.commit()
+            st.success(f"Procedure {pname} added!")
 
-        if reports.empty:
-            st.info("No reports available yet.")
-        else:
-            # KPIs
-            total_cases = reports['cases_done'].sum()
-            total_income = reports['income_generated'].sum()
-            avg_income_per_case = total_income / total_cases if total_cases > 0 else 0
-            st.markdown(
-                f"""
-                <div style="display:flex; gap:20px;">
-                    <div style='background-color:#FFB347; padding:20px; border-radius:10px; flex:1;'>
-                        <h3>Total Cases</h3>
-                        <h2>{total_cases}</h2>
-                    </div>
-                    <div style='background-color:#77DD77; padding:20px; border-radius:10px; flex:1;'>
-                        <h3>Total Income (KSh)</h3>
-                        <h2>{total_income:,.0f}</h2>
-                    </div>
-                    <div style='background-color:#89CFF0; padding:20px; border-radius:10px; flex:1;'>
-                        <h3>Avg Income per Case</h3>
-                        <h2>{avg_income_per_case:,.0f}</h2>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True
-            )
+with st.sidebar.expander("Add Report"):
+    reps = session.query(Representative).all()
+    procedures = session.query(Procedure).all()
+    rep_sel = st.selectbox("Select Rep", reps, format_func=lambda x: x.name)
+    proc_sel = st.selectbox("Select Procedure", procedures, format_func=lambda x: x.name)
+    cases_done = st.number_input("Cases Done", min_value=0, step=1)
+    income = st.number_input("Income Generated (KSh)", min_value=0.0, step=1000.0)
 
-            # Income by procedure
-            income_proc = reports.groupby('procedure_id')['income_generated'].sum().reset_index()
-            income_proc = income_proc.merge(procs[['id', 'name']], left_on='procedure_id', right_on='id')
-            fig_proc = px.bar(income_proc, x='name', y='income_generated', color='income_generated',
-                              color_continuous_scale='Viridis', labels={'name':'Procedure', 'income_generated':'Income'})
-            st.plotly_chart(fig_proc, use_container_width=True)
+    if st.button("Add Report"):
+        if rep_sel and proc_sel:
+            report = Report(rep=rep_sel, procedure=proc_sel, cases_done=cases_done, income_generated=income)
+            session.add(report)
+            session.commit()
+            st.success("Report added!")
 
-            # Cases per rep
-            cases_rep = reports.groupby('rep_id')['cases_done'].sum().reset_index()
-            cases_rep = cases_rep.merge(reps[['id', 'name']], left_on='rep_id', right_on='id')
-            fig_rep = px.pie(cases_rep, names='name', values='cases_done', title="Cases Distribution per Representative")
-            st.plotly_chart(fig_rep, use_container_width=True)
+# -----------------------------
+# DASHBOARD & INSIGHTS
+# -----------------------------
+st.header("📊 Insights & Projections")
 
-            # Simple projection (next month)
-            st.subheader("Projection / Forecast")
-            avg_monthly_cases = reports['cases_done'].mean()
-            avg_monthly_income = reports['income_generated'].mean()
-            st.metric("Projected Cases Next Month", int(avg_monthly_cases))
-            st.metric("Projected Income Next Month (KSh)", int(avg_monthly_income))
+# Fetch data
+reports = session.query(Report).all()
+if reports:
+    df = pd.DataFrame([{
+        "rep": r.rep.name,
+        "procedure": r.procedure.name,
+        "cases": r.cases_done,
+        "income": r.income_generated,
+        "date": r.reported_at
+    } for r in reports])
 
     # -------------------------
-    # ADD REPRESENTATIVE
+    # KPIs
     # -------------------------
-    elif choice == "Add Representative":
-        st.subheader("Add a Representative")
-        with st.form("add_rep"):
-            rep_name = st.text_input("Representative Name")
-            region = st.text_input("Region")
-            submitted = st.form_submit_button("Add Representative")
-            if submitted:
-                new_rep = Representative(name=rep_name, region=region)
-                session.add(new_rep)
-                session.commit()
-                st.success(f"Added representative {rep_name}")
+    total_cases = df["cases"].sum()
+    total_income = df["income"].sum()
+    avg_income = df["income"].mean()
+
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("Total Cases", total_cases)
+    kpi2.metric("Total Income (KSh)", f"{total_income:,.2f}")
+    kpi3.metric("Avg Income per Report", f"{avg_income:,.2f}")
 
     # -------------------------
-    # ADD PROCEDURE
+    # Filter Options
     # -------------------------
-    elif choice == "Add Procedure":
-        st.subheader("Add a Procedure")
-        with st.form("add_proc"):
-            proc_name = st.text_input("Procedure Name (Trauma / Arthro)")
-            max_cap = st.number_input("Maximum Cap (optional)", min_value=0.0, step=1.0)
-            submitted = st.form_submit_button("Add Procedure")
-            if submitted:
-                new_proc = Procedure(name=proc_name, max_cap=max_cap if max_cap > 0 else None)
-                session.add(new_proc)
-                session.commit()
-                st.success(f"Added procedure {proc_name}")
+    st.subheader("Filter Reports")
+    reps_list = ["All"] + sorted(df["rep"].unique().tolist())
+    proc_list = ["All"] + sorted(df["procedure"].unique().tolist())
+
+    rep_filter = st.selectbox("Filter by Rep", reps_list)
+    proc_filter = st.selectbox("Filter by Procedure", proc_list)
+
+    df_filtered = df.copy()
+    if rep_filter != "All":
+        df_filtered = df_filtered[df_filtered["rep"] == rep_filter]
+    if proc_filter != "All":
+        df_filtered = df_filtered[df_filtered["procedure"] == proc_filter]
 
     # -------------------------
-    # ADD REPORT
+    # Reports Table
     # -------------------------
-    elif choice == "Add Report":
-        st.subheader("Add a Report")
-        reps = session.query(Representative).all()
-        procs = session.query(Procedure).all()
-        if not reps or not procs:
-            st.warning("Add at least one representative and one procedure first.")
-        else:
-            with st.form("add_report"):
-                rep_select = st.selectbox("Representative", reps, format_func=lambda x: x.name)
-                proc_select = st.selectbox("Procedure", procs, format_func=lambda x: x.name)
-                cases_done = st.number_input("Number of Cases Done", min_value=0, step=1)
-                income_generated = st.number_input("Income Generated (KSh)", min_value=0.0, step=1.0)
-                submitted = st.form_submit_button("Add Report")
-                if submitted:
-                    new_report = Report(
-                        rep_id=rep_select.id,
-                        procedure_id=proc_select.id,
-                        cases_done=cases_done,
-                        income_generated=income_generated
-                    )
-                    session.add(new_report)
-                    session.commit()
-                    st.success(f"Added report for {rep_select.name} ({proc_select.name})")
+    st.subheader("Reports Table")
+    st.dataframe(df_filtered.sort_values("date", ascending=False))
+
+    # CSV / Excel Export
+    csv = df_filtered.to_csv(index=False).encode("utf-8")
+    st.download_button(label="📥 Download CSV", data=csv, file_name="reports.csv", mime="text/csv")
 
     # -------------------------
-    # ADD ATTACHMENT
+    # Charts & Insights
     # -------------------------
-    elif choice == "Add Attachment":
-        st.subheader("Add Attachment")
-        procs = session.query(Procedure).all()
-        if not procs:
-            st.warning("Add at least one procedure first.")
-        else:
-            with st.form("add_attachment"):
-                proc_select = st.selectbox("Procedure", procs, format_func=lambda x: x.name)
-                file = st.file_uploader("Upload File")
-                submitted = st.form_submit_button("Upload Attachment")
-                if submitted and file is not None:
-                    new_attachment = Attachment(
-                        procedure_id=proc_select.id,
-                        filename=file.name
-                    )
-                    session.add(new_attachment)
-                    session.commit()
-                    st.success(f"Uploaded {file.name} for {proc_select.name}")
+    st.subheader("Cases by Procedure")
+    fig_proc = px.bar(df_filtered.groupby("procedure")["cases"].sum().reset_index(),
+                      x="procedure", y="cases",
+                      color="cases", color_continuous_scale="Viridis")
+    st.plotly_chart(fig_proc, use_container_width=True)
+
+    st.subheader("Income by Representative")
+    fig_rep = px.pie(df_filtered.groupby("rep")["income"].sum().reset_index(),
+                     names="rep", values="income",
+                     color_discrete_sequence=px.colors.qualitative.Pastel)
+    st.plotly_chart(fig_rep, use_container_width=True)
 
     # -------------------------
-    # VIEW DATA
+    # Trend Lines & Projections
     # -------------------------
-    elif choice == "View Data":
-        st.subheader("All Reports")
-        reports = session.query(Report).all()
-        if reports:
-            for r in reports:
-                st.write(f"{r.rep.name} | {r.procedure.name} | Cases: {r.cases_done} | "
-                         f"Income: KSh {r.income_generated} | Reported: {r.reported_at}")
-        else:
-            st.info("No reports recorded yet.")
+    st.subheader("Trends & Projections")
 
-    session.close()
+    df_filtered["month"] = df_filtered["date"].dt.to_period("M").astype(str)
+    monthly_cases = df_filtered.groupby("month")["cases"].sum().reset_index()
+    monthly_income = df_filtered.groupby("month")["income"].sum().reset_index()
 
-# -------------------------
-# RUN
-# -------------------------
-if __name__ == "__main__":
-    init_db()
-    main()
+    fig_trend = go.Figure()
+    fig_trend.add_trace(go.Scatter(x=monthly_cases["month"], y=monthly_cases["cases"], mode="lines+markers", name="Cases", line=dict(color="blue")))
+    fig_trend.add_trace(go.Scatter(x=monthly_income["month"], y=monthly_income["income"], mode="lines+markers", name="Income", line=dict(color="green")))
+    fig_trend.update_layout(title="Monthly Cases & Income Trends", xaxis_title="Month", yaxis_title="Count / KSh", template="plotly_white")
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+    # Projected monthly averages
+    st.info(f"📅 Projected Monthly Cases: {monthly_cases['cases'].mean():.1f}")
+    st.info(f"💰 Projected Monthly Income: KSh {monthly_income['income'].mean():,.2f}")
+
+else:
+    st.warning("No reports yet. Please add data to view insights.")
