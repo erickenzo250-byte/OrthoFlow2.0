@@ -1,10 +1,11 @@
 # Streamlit core
 streamlit==1.51.0
 
-# Database
+# Database ORM
 SQLAlchemy==2.0.44
 pandas==2.3.3
 
-# Optional / utilities
+# Optional utilities
 python-dotenv==1.2.1
 numpy==2.3.4
+plotly==6.4.0
