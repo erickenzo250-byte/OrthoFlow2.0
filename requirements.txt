@@ -1,13 +1,10 @@
-# Core
-streamlit==1.26.0
-SQLAlchemy==2.0.22
-pandas==2.1.0
+# Streamlit core
+streamlit==1.51.0
 
-# Database drivers
-psycopg2-binary==2.9.9    # PostgreSQL
-mysqlclient==2.1.1         # MySQL/MariaDB
-pymysql==1.1.0             # Alternative MySQL driver
+# Database
+SQLAlchemy==2.0.44
+pandas==2.3.3
 
-# Optional utilities
-python-dotenv==1.0.0       # For environment variables (DB credentials)
-numpy==1.27.0               # Useful for numeric operations
+# Optional / utilities
+python-dotenv==1.2.1
+numpy==2.3.4
