@@ -5,12 +5,13 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import plotly.express as px
 import plotly.graph_objects as go
+from typing import List, Tuple
 
 # -----------------------------
 # DATABASE SETUP
 # -----------------------------
 DATABASE_URL = "sqlite:///orthotracker.db"
-# Use check_same_thread=False for SQLite with Streamlit
+# CRITICAL FIX for Streamlit/SQLite concurrency errors
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
@@ -20,15 +21,13 @@ def get_session():
     return SessionLocal()
 
 # -----------------------------
-# MODELS
+# MODELS (No changes needed here)
 # -----------------------------
 class Representative(Base):
     __tablename__ = "representatives"
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     reports = relationship("Report", back_populates="rep")
-
-    # Define a simple representation for Streamlit's format_func
     def __repr__(self):
         return self.name 
 
@@ -37,8 +36,6 @@ class Procedure(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False, unique=True)
     reports = relationship("Report", back_populates="procedure")
-
-    # Define a simple representation for Streamlit's format_func
     def __repr__(self):
         return self.name
 
@@ -60,10 +57,30 @@ class Report(Base):
 Base.metadata.create_all(engine)
 
 # -----------------------------
+# DATA UTILITY FUNCTIONS (New for robust data retrieval)
+# -----------------------------
+@st.cache_data
+def get_reps_and_procs() -> Tuple[List[Representative], List[Procedure]]:
+    """Fetches all Reps and Procedures in a single, cached, thread-safe operation."""
+    session = get_session()
+    try:
+        reps = session.query(Representative).all()
+        procedures = session.query(Procedure).all()
+        return reps, procedures
+    except Exception as e:
+        st.error(f"Database error during fetch: {e}")
+        return [], []
+    finally:
+        session.close()
+
+# -----------------------------
 # STREAMLIT APP
 # -----------------------------
 st.set_page_config(page_title="Orthotracker Dashboard", layout="wide", initial_sidebar_state="expanded")
 st.title("🏥 Orthotracker Dashboard")
+
+# --- Fetch Reps/Procedures once for the sidebar (Cached) ---
+reps, procedures = get_reps_and_procs() 
 
 # -----------------------------
 # SIDEBAR - Add Data
@@ -75,51 +92,56 @@ with st.sidebar.expander("➕ Add Representative"):
     rep_name = st.text_input("Rep Name", key="new_rep_name")
     if st.button("Add Rep"):
         session = get_session()
-        if not rep_name:
-            st.error("Representative name cannot be empty.")
-        else:
-            existing_rep = session.query(Representative).filter_by(name=rep_name).first()
-            if existing_rep:
-                st.warning(f"Representative **{rep_name}** already exists!")
+        try:
+            if not rep_name:
+                st.error("Representative name cannot be empty.")
             else:
-                rep = Representative(name=rep_name)
-                session.add(rep)
-                session.commit()
-                st.success(f"Representative **{rep_name}** added!")
-        session.close()
+                existing_rep = session.query(Representative).filter_by(name=rep_name).first()
+                if existing_rep:
+                    st.warning(f"Representative **{rep_name}** already exists!")
+                else:
+                    rep = Representative(name=rep_name)
+                    session.add(rep)
+                    session.commit()
+                    st.success(f"Representative **{rep_name}** added!")
+                    # Clear cache to force refresh of selectboxes on next run
+                    get_reps_and_procs.clear() 
+        finally:
+            session.close()
 
 ## Add Procedure
 with st.sidebar.expander("➕ Add Procedure"):
     proc_name = st.text_input("Procedure Name", key="new_proc_name")
     if st.button("Add Procedure"):
         session = get_session()
-        if not proc_name:
-            st.error("Procedure name cannot be empty.")
-        else:
-            existing_proc = session.query(Procedure).filter_by(name=proc_name).first()
-            if existing_proc:
-                st.warning(f"Procedure **{proc_name}** already exists!")
+        try:
+            if not proc_name:
+                st.error("Procedure name cannot be empty.")
             else:
-                proc = Procedure(name=proc_name)
-                session.add(proc)
-                session.commit()
-                st.success(f"Procedure **{proc_name}** added!")
-        session.close()
+                existing_proc = session.query(Procedure).filter_by(name=proc_name).first()
+                if existing_proc:
+                    st.warning(f"Procedure **{proc_name}** already exists!")
+                else:
+                    proc = Procedure(name=proc_name)
+                    session.add(proc)
+                    session.commit()
+                    st.success(f"Procedure **{proc_name}** added!")
+                    # Clear cache to force refresh of selectboxes on next run
+                    get_reps_and_procs.clear()
+        finally:
+            session.close()
 
 ## Add Report using st.form
 with st.sidebar.expander("📝 Add Report"):
-    session = get_session()
-    reps = session.query(Representative).all()
-    procedures = session.query(Procedure).all()
-    session.close() # Close session after fetching objects for selectbox
-
+    # Re-fetch cached objects for the selectbox in case new data was added
+    reps, procedures = get_reps_and_procs() 
+    
     with st.form("add_report_form", clear_on_submit=True):
         
         if not reps or not procedures:
             st.warning("Please add at least one Representative and one Procedure first.")
             submitted = False 
         else:
-            # FIX: Use format_func to display name but return the object
             rep_sel = st.selectbox("Select Rep", reps, format_func=lambda x: x.name, key="report_rep_sel")
             proc_sel = st.selectbox("Select Procedure", procedures, format_func=lambda x: x.name, key="report_proc_sel")
             cases_done = st.number_input("Cases Done", min_value=0, step=1, key="report_cases")
@@ -132,35 +154,46 @@ with st.sidebar.expander("📝 Add Report"):
                  st.error("Cases done and income must be non-negative values.")
             else:
                 session = get_session()
-                # Use the ID of the selected object for the relationship
-                report = Report(rep_id=rep_sel.id, procedure_id=proc_sel.id, cases_done=cases_done, income_generated=income)
-                session.add(report)
-                session.commit()
-                session.close()
-                st.success(f"Report for **{rep_sel.name}** added successfully!")
+                try:
+                    # Use the ID of the selected object for the relationship
+                    report = Report(rep_id=rep_sel.id, procedure_id=proc_sel.id, cases_done=cases_done, income_generated=income)
+                    session.add(report)
+                    session.commit()
+                    st.success(f"Report for **{rep_sel.name}** added successfully!")
+                finally:
+                    session.close()
 
 # -----------------------------
 # DASHBOARD & INSIGHTS
 # -----------------------------
 st.header("📊 Insights & Projections")
 
-# Fetch data
-session = get_session()
-reports = session.query(Report).all()
-session.close() # Close session after fetching data
+# Fetch all reports for the dashboard
+@st.cache_data
+def get_all_reports() -> pd.DataFrame:
+    session = get_session()
+    try:
+        reports = session.query(Report).all()
+        if not reports:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame([{
+            "rep": r.rep.name,
+            "procedure": r.procedure.name,
+            "cases": r.cases_done,
+            "income": r.income_generated,
+            "date": r.reported_at
+        } for r in reports])
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    finally:
+        session.close()
 
-if reports:
-    # --- Data Processing ---
-    df = pd.DataFrame([{
-        "rep": r.rep.name,
-        "procedure": r.procedure.name,
-        "cases": r.cases_done,
-        "income": r.income_generated,
-        "date": r.reported_at
-    } for r in reports])
+df = get_all_reports()
 
-    df["date"] = pd.to_datetime(df["date"])
-
+if not df.empty:
+    # --- Data Processing (Dashboard logic remains the same) ---
+    
     # -------------------------
     # Filter Options
     # -------------------------
@@ -175,11 +208,9 @@ if reports:
     with col_proc:
         proc_filter = st.selectbox("Filter by Procedure", proc_list)
 
-    # Date filter
     min_date = df["date"].min().date()
     max_date = df["date"].max().date()
     
-    # FIX: Handle potential single date selection (e.g., date_range is a tuple with 1 element)
     date_range = st.date_input(
         "Select Date Range",
         value=(min_date, max_date),
@@ -198,7 +229,6 @@ if reports:
     # Apply date filter
     if len(date_range) == 2:
         start_date, end_date = date_range
-        # Ensure start_date <= end_date
         if start_date > end_date:
             start_date, end_date = end_date, start_date
             
@@ -284,31 +314,25 @@ if reports:
 
     df_filtered["month"] = df_filtered["date"].dt.to_period("M").astype(str)
     
-    # Check if there's enough data for meaningful trends (more than one unique month)
     if df_filtered["month"].nunique() > 1:
         monthly_cases = df_filtered.groupby("month")["cases"].sum().reset_index()
         monthly_income = df_filtered.groupby("month")["income"].sum().reset_index()
 
         fig_trend = go.Figure()
         
-        # Add Cases trace (Primary Y-axis)
         fig_trend.add_trace(go.Scatter(x=monthly_cases["month"], y=monthly_cases["cases"], mode="lines+markers", name="Cases", line=dict(color="blue")))
-        
-        # Add Income trace (Secondary Y-axis)
         fig_trend.add_trace(go.Scatter(x=monthly_income["month"], y=monthly_income["income"], mode="lines+markers", name="Income", yaxis="y2", line=dict(color="green")))
         
-        # FIX: Define Y-axes explicitly for dual-axis plot
         fig_trend.update_layout(
             title="Monthly Cases & Income Trends",
             xaxis_title="Month", 
-            yaxis=dict(title="Cases Count", showgrid=False, color="blue"), # Primary Y-axis (y)
-            yaxis2=dict(title="Income (KSh)", overlaying="y", side="right", showgrid=False, color="green"), # Secondary Y-axis (y2)
+            yaxis=dict(title="Cases Count", showgrid=False, color="blue"),
+            yaxis2=dict(title="Income (KSh)", overlaying="y", side="right", showgrid=False, color="green"),
             template="plotly_white",
             legend=dict(x=0, y=1.1, orientation="h")
         )
         st.plotly_chart(fig_trend, use_container_width=True)
 
-        # Projected monthly averages
         st.info(f"📅 **Projected Monthly Cases:** {monthly_cases['cases'].mean():.1f}")
         st.info(f"💰 **Projected Monthly Income:** KSh {monthly_income['income'].mean():,.2f}")
     else:
